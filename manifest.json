@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.aznit11.omayoutube-dl",
   "name": "OmaYoutube-dl",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Aznit11",
   "license": "MIT",
   "description": "Search YouTube, preview audio, download videos/audios and playlists with yt-dlp.",

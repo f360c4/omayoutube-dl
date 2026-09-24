@@ -15,6 +15,12 @@ Panel {
   moduleName: "io.github.aznit11.omayoutube-dl"
   manageIpc: false
 
+  // Panel body text. Use the fixed theme bar text (like first-party panels),
+  // NOT the wallpaper-adaptive barForeground: with a transparent bar over a
+  // light wallpaper that resolves to a dark color and vanishes on the dark
+  // popup surface.
+  readonly property color panelForeground: bar ? bar.foreground : Color.foreground
+
   property var anchorItem: null
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
@@ -28,7 +34,18 @@ Panel {
   property string dlMode: setting("dlMode", "video")
   property string playlistMode: setting("playlistMode", "single")
   property string maxResults: setting("maxResults", "10")
+  property string searchSort: setting("searchSort", "relevance")
+  property string cookiesBrowser: setting("cookiesBrowser", "off")
   property bool showVideo: setting("showVideo", true)
+  property string audioLang: setting("audioLang", "original")
+  property string subLangs: setting("subLangs", "off")
+  property bool embedSubs: setting("embedSubs", false)
+  property string whisperEngine: setting("whisperEngine", "local")
+  property string whisperLang: setting("whisperLang", "pt")
+  property string whisperModel: setting("whisperModel", "medium")
+  property string whisperCmd: setting("whisperCmd", "auto")
+  property string whisperApiModel: setting("whisperApiModel", "whisper-1")
+  property string whisperKeyEnv: setting("whisperKeyEnv", "OPENAI_API_KEY")
 
   // ---- ui state ----
   property string tab: "search"
@@ -67,6 +84,12 @@ Panel {
   property string activeUrl: ""
   property string activeDetail: "idle"
   property string lastDone: ""
+
+  // ---- transcription (whisper, local by default) ----
+  property bool transcribing: false
+  property string transcribeTitle: ""
+  property string transcribeDetail: "idle"
+  property real transcribePct: 0
 
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined;
@@ -163,7 +186,7 @@ Panel {
     root.searchError = "";
     root.statusLine = "Searching for \"" + q + "\"…";
     resultsModel.clear();
-    searchProc.command = ["yt-dlp", Model.searchSpec(q, root.maxResults), "--flat-playlist", "-J", "--no-warnings"];
+    searchProc.command = ["yt-dlp", Model.searchSpec(q, root.maxResults, root.searchSort), "--flat-playlist", "--playlist-end", root.maxResults, "-J", "--no-warnings"].concat(Model.cookiesArgs(root.cookiesBrowser));
     searchProc.running = true;
     searchTimeout.restart();
   }
@@ -213,7 +236,7 @@ Panel {
     // Progressive H.264 mp4 (video+audio in one URL) so the player shows
     // picture + sound. itag 22/18 are H.264; VAAPI is broken for AV1/VP9
     // here (black screen), so avc is preferred throughout.
-    resolveProc.command = ["yt-dlp", "-g", "-f", "22/18/17/36/b[vcodec^=avc1][height<=480]/b[height<=480]/w", "--no-warnings", root.nowUrl];
+    resolveProc.command = ["yt-dlp", "-g", "-f", "22/18/17/36/b[vcodec^=avc1][height<=480]/b[height<=480]/w", "--no-warnings"].concat(Model.cookiesArgs(root.cookiesBrowser)).concat([root.nowUrl]);
     resolveProc.running = true;
   }
 
@@ -245,7 +268,7 @@ Panel {
     root.cacheDetail = "caching video for in-plugin playback…";
     root.cacheFile = Model.cacheFileFor(root.nowId, root.homeDir);
     root.statusLine = "Caching video (one-time)…";
-    cacheProc.command = ["bash", "-c", Model.buildCacheScript(root.nowUrl, root.cacheFile)];
+    cacheProc.command = ["bash", "-c", Model.buildCacheScript(root.nowUrl, root.cacheFile, root.cookiesBrowser)];
     cacheProc.running = true;
   }
 
@@ -375,6 +398,7 @@ Panel {
     var script = Model.buildDownloadScript({
       url: jobUrl, mode: root.dlMode, quality: root.quality,
       audioFormat: root.audioFormat, videoFormat: root.videoFormat,
+      audioLang: root.audioLang, subLangs: root.subLangs, embedSubs: root.embedSubs, cookies: root.cookiesBrowser,
       outDir: root.downloadDir, playlist: root.playlistMode, home: root.homeDir
     });
     dlProc.command = ["bash", "-c", script];
@@ -466,6 +490,63 @@ Panel {
 
   function checkDeps() {
     depProc.running = true;
+  }
+
+  // ================= transcription (whisper) =================
+  function transcribe(title, url) {
+    var u = String(url || "");
+    console.log("[omayoutube] transcribe() engine=" + root.whisperEngine + " url=" + u.slice(0, 60));
+    if (u === "") { root.statusLine = "No URL to transcribe."; return; }
+    if (root.transcribing) { root.statusLine = "Already transcribing."; return; }
+    if (root.whisperEngine === "off") {
+      root.statusLine = "Transcription is off — pick an engine in Settings.";
+      root.tab = "settings";
+      return;
+    }
+    root.transcribing = true;
+    root.transcribeTitle = String(title || u);
+    root.transcribePct = 0;
+    root.transcribeDetail = "starting…";
+    root.statusLine = "Transcribing: " + root.transcribeTitle;
+    root.tab = "downloads";
+    var script = Model.buildTranscribeScript({
+      url: u, id: "", outDir: root.downloadDir, engine: root.whisperEngine,
+      localCmd: root.whisperCmd, lang: root.whisperLang, model: root.whisperModel,
+      apiModel: root.whisperApiModel,
+      keyEnv: root.whisperKeyEnv, cookies: root.cookiesBrowser, cacheDir: Model.cacheDir(root.homeDir), home: root.homeDir
+    });
+    trProc.command = ["bash", "-c", script];
+    trProc.running = true;
+  }
+
+  function handleTrLine(line) {
+    var s = String(line || "");
+    if (s.trim() === "") return;
+    var r = Model.parseProgressLine(s);
+    if (r) {
+      root.transcribePct = r.pct;
+      root.transcribeDetail = s.trim().slice(0, 110);
+      return;
+    }
+    var t = s.trim();
+    if (t.indexOf("DONE:") === 0) {
+      root.transcribeDetail = "saved " + t.slice(5);
+      return;
+    }
+    root.transcribeDetail = t.slice(0, 120);
+  }
+
+  function cancelTranscribe() {
+    if (trProc.running) trProc.running = false;
+    root.transcribing = false;
+    root.transcribePct = 0;
+    root.transcribeDetail = "cancelled";
+    root.statusLine = "Transcription cancelled.";
+  }
+
+  function dismissTranscribe() {
+    root.transcribeDetail = "idle";
+    root.transcribePct = 0;
   }
 
   // Live player diagnostics are logged ([omayoutube] state/tracks/error)
@@ -584,8 +665,30 @@ Panel {
   Process { id: openProc }
 
   Process {
+    id: trProc
+    stdout: SplitParser { onRead: function(line) { root.handleTrLine(line); } }
+    stderr: SplitParser { onRead: function(line) { root.handleTrLine(line); } }
+    onExited: function(code) {
+      console.log("[omayoutube] transcribe process exited code=" + code + " transcribing=" + root.transcribing);
+      if (!root.transcribing) return;
+      root.transcribing = false;
+      if (code === 0) {
+        root.transcribePct = 100;
+        root.statusLine = "Subtitles ready: " + root.transcribeDetail;
+        historyModel.insert(0, {
+          title: root.transcribeTitle,
+          detail: ".srt • " + (root.whisperEngine === "openai" ? root.whisperApiModel : "whisper local"),
+          vid: "", url: ""
+        });
+      } else {
+        root.statusLine = "Transcription failed (exit " + code + "). " + root.transcribeDetail;
+      }
+    }
+  }
+
+  Process {
     id: depProc
-    command: ["bash", "-c", "echo -n 'yt-dlp '; (yt-dlp --version 2>/dev/null || echo missing); echo -n 'mpv '; (mpv --version 2>/dev/null | head -n1 || echo missing); echo -n 'ffmpeg '; (ffmpeg -version 2>/dev/null | head -n1 || echo missing)"]
+    command: ["bash", "-c", "echo -n 'yt-dlp '; (yt-dlp --version 2>/dev/null || echo missing); echo -n 'mpv '; (mpv --version 2>/dev/null | head -n1 || echo missing); echo -n 'ffmpeg '; (ffmpeg -version 2>/dev/null | head -n1 || echo missing); echo -n 'whisper '; (command -v whisper-cli || command -v whisper || echo missing); echo -n 'curl '; (command -v curl || echo missing)"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: { depText.text = String(text || "").trim(); }
@@ -663,7 +766,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             Text {
               text: "OMAYOUTUBE-DL"
-              color: root.barForeground
+              color: root.panelForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.title
               font.bold: true
@@ -671,7 +774,7 @@ Panel {
             Text {
               text: root.statusLine
               textFormat: Text.PlainText
-              color: Qt.darker(root.barForeground, 1.4)
+              color: Qt.darker(root.panelForeground, 1.4)
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideRight
@@ -688,7 +791,7 @@ Panel {
             id: searchField
             width: parent.width - Style.space(104)
             placeholderText: "Search YouTube… (title, artist, URL)"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             Keys.onPressed: function(event) {
               if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -706,11 +809,25 @@ Panel {
             iconText: root.searching ? "" : ""
             iconSpinning: root.searching
             bordered: true
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Search YouTube"
             onClicked: root.doSearch()
+          }
+        }
+
+        // search sort/filter
+        Dropdown {
+          width: parent.width
+          label: "Search filter"
+          value: root.searchSort
+          options: Model.searchSortOptions()
+          foreground: root.panelForeground
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onChanged: function(v) {
+            root.searchSort = v;
+            root.persistSettings({ searchSort: v });
           }
         }
 
@@ -722,7 +839,7 @@ Panel {
             id: urlField
             width: parent.width - Style.space(104)
             placeholderText: "Paste video / playlist URL…"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             Keys.onPressed: function(event) {
               if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -736,7 +853,7 @@ Panel {
             text: "Queue"
             iconText: ""
             bordered: true
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Queue URL for download"
@@ -753,7 +870,7 @@ Panel {
             iconText: ""
             selected: root.dlMode === "video"
             bordered: true
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Download full video"
@@ -767,7 +884,7 @@ Panel {
             iconText: ""
             selected: root.dlMode === "audio"
             bordered: true
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Extract audio only"
@@ -781,7 +898,7 @@ Panel {
             iconText: ""
             selected: root.playlistMode === "playlist"
             bordered: true
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Toggle full-playlist vs single-video downloads"
@@ -802,7 +919,7 @@ Panel {
             iconText: ""
             selected: root.tab === "search"
             bordered: root.tab === "search"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: root.tab = "search"
@@ -812,7 +929,7 @@ Panel {
             iconText: ""
             selected: root.tab === "downloads"
             bordered: root.tab === "downloads"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: root.tab = "downloads"
@@ -822,7 +939,7 @@ Panel {
             iconText: ""
             selected: root.tab === "settings"
             bordered: root.tab === "settings"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             accent: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: root.tab = "settings"
@@ -835,7 +952,7 @@ Panel {
           width: parent.width
           height: progressCard.implicitHeight + Style.space(20)
           radius: Style.cornerRadius
-          color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.07)
+          color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.07)
           border.width: 1
           border.color: Color.accent
           Column {
@@ -851,7 +968,7 @@ Panel {
                 width: parent.width - Style.space(150)
                 text: "⬇ " + root.activeTitle
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.panelForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
@@ -870,7 +987,7 @@ Panel {
                 width: Style.space(74)
                 text: "Cancel"
                 iconText: ""
-                foreground: root.barForeground
+                foreground: root.panelForeground
                 accent: Color.accent
                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 tooltipText: "Cancel all downloads"
@@ -881,7 +998,7 @@ Panel {
               width: parent.width
               height: Style.space(12)
               radius: height / 2
-              color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.15)
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.15)
               Rectangle {
                 width: Math.max(Style.space(12), Math.round(parent.width * Math.max(0, Math.min(1, root.activePct / 100))))
                 height: parent.height
@@ -893,7 +1010,79 @@ Panel {
               width: parent.width
               text: root.activeDetail
               textFormat: Text.PlainText
-              color: Qt.darker(root.barForeground, 1.5)
+              color: Qt.darker(root.panelForeground, 1.5)
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+        }
+
+        // ===== transcription progress =====
+        Rectangle {
+          visible: root.transcribing || (root.transcribeDetail !== "idle" && root.transcribeDetail !== "")
+          width: parent.width
+          height: trCard.implicitHeight + Style.space(20)
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.07)
+          border.width: 1
+          border.color: Color.accent
+          Column {
+            id: trCard
+            width: parent.width - Style.space(20)
+            x: Style.space(10)
+            y: Style.space(10)
+            spacing: Style.space(6)
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              Text {
+                width: parent.width - Style.space(150)
+                text: "󰈙 " + root.transcribeTitle
+                textFormat: Text.PlainText
+                color: root.panelForeground
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                elide: Text.ElideRight
+              }
+              Text {
+                width: Style.space(60)
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(root.transcribePct) + "%"
+                color: Color.accent
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.title
+                font.bold: true
+              }
+              Button {
+                width: Style.space(74)
+                text: root.transcribing ? "Cancel" : "Close"
+                iconText: ""
+                foreground: root.panelForeground
+                accent: Color.accent
+                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                tooltipText: root.transcribing ? "Cancel transcription" : "Dismiss"
+                onClicked: root.transcribing ? root.cancelTranscribe() : root.dismissTranscribe()
+              }
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(12)
+              radius: height / 2
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.15)
+              Rectangle {
+                width: Math.max(Style.space(12), Math.round(parent.width * Math.max(0, Math.min(1, root.transcribePct / 100))))
+                height: parent.height
+                radius: parent.radius
+                color: Color.accent
+              }
+            }
+            Text {
+              width: parent.width
+              text: root.transcribeDetail
+              textFormat: Text.PlainText
+              color: Qt.darker(root.panelForeground, 1.5)
               font.family: "monospace"
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
@@ -920,7 +1109,7 @@ Panel {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: "Search above — results appear here with watch + download actions."
-            color: Qt.darker(root.barForeground, 1.5)
+            color: Qt.darker(root.panelForeground, 1.5)
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.body
             font.italic: true
@@ -935,7 +1124,7 @@ Panel {
               width: Style.space(264)
               height: miniCol.implicitHeight + Style.space(20)
               radius: Style.cornerRadius
-              color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.07)
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.07)
               border.width: 1
               border.color: Color.accent
               Column {
@@ -948,7 +1137,7 @@ Panel {
                   width: parent.width
                   text: (root.resolving || root.caching ? "◌ " : (root.previewPaused ? "⏸ " : "▶ ")) + root.nowTitle
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.panelForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.bodySmall
                   font.bold: true
@@ -991,7 +1180,7 @@ Panel {
                   visible: root.audioFallback
                   width: parent.width
                   text: "♪ Audio-only preview."
-                  color: Qt.darker(root.barForeground, 1.3)
+                  color: Qt.darker(root.panelForeground, 1.3)
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
                   font.italic: true
@@ -1012,7 +1201,7 @@ Panel {
                     width: parent.width
                     height: Style.space(8)
                     radius: height / 2
-                    color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.15)
+                    color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.15)
                     Rectangle {
                       width: Math.max(Style.space(8), Math.round(parent.width * Math.max(0, Math.min(1, root.cachePct / 100))))
                       height: parent.height
@@ -1028,7 +1217,7 @@ Panel {
                   Text {
                     width: Style.space(76)
                     text: Model.fmtTime(mplayer.position) + "/" + Model.fmtTime(mplayer.duration)
-                    color: Qt.darker(root.barForeground, 1.3)
+                    color: Qt.darker(root.panelForeground, 1.3)
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
                     anchors.verticalCenter: parent.verticalCenter
@@ -1056,7 +1245,7 @@ Panel {
                       iconText: root.previewPaused ? "" : ""
                       bordered: true
                       selected: root.previewPlaying && !root.previewPaused
-                      foreground: root.barForeground
+                      foreground: root.panelForeground
                       accent: Color.accent
                       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                       tooltipText: "Play / pause"
@@ -1067,7 +1256,7 @@ Panel {
                       text: "Stop"
                       iconText: ""
                       bordered: true
-                      foreground: root.barForeground
+                      foreground: root.panelForeground
                       accent: Color.accent
                       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                       tooltipText: "Stop playback"
@@ -1082,7 +1271,7 @@ Panel {
                       text: "Player"
                       iconText: ""
                       bordered: true
-                      foreground: root.barForeground
+                      foreground: root.panelForeground
                       accent: Color.accent
                       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                       tooltipText: "Open in default video player"
@@ -1093,11 +1282,25 @@ Panel {
                       text: "mpv"
                       iconText: "⛶"
                       bordered: true
-                      foreground: root.barForeground
+                      foreground: root.panelForeground
                       accent: Color.accent
                       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                       tooltipText: "Open fullscreen in mpv"
                       onClicked: root.playVideoMpv(root.nowUrl)
+                    }
+                  }
+                  Row {
+                    width: parent.width
+                    Button {
+                      width: parent.width
+                      text: "Subtitles (whisper)"
+                      iconText: "󰈙"
+                      bordered: true
+                      foreground: root.panelForeground
+                      accent: Color.accent
+                      fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                      tooltipText: "Transcribe this video to .srt"
+                      onClicked: root.transcribe(root.nowTitle, root.nowUrl)
                     }
                   }
                 }
@@ -1119,9 +1322,9 @@ Panel {
               required property string thumb
               required property int index
               width: resultsList.width
-              height: Style.space(80)
+              height: Style.space(116)
               radius: Style.cornerRadius
-              color: rowMouse.containsMouse ? Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.10) : Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.04)
+              color: rowMouse.containsMouse ? Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.10) : Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.04)
               border.width: 1
               border.color: rowMouse.containsMouse ? Color.accent : "transparent"
               Row {
@@ -1132,7 +1335,7 @@ Panel {
                   width: Style.space(104)
                   height: Style.space(66)
                   radius: Style.space(6)
-                  color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.12)
+                  color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.12)
                   clip: true
                   Image {
                     anchors.fill: parent
@@ -1165,7 +1368,7 @@ Panel {
                     width: parent.width
                     text: title
                     textFormat: Text.PlainText
-                    color: root.barForeground
+                    color: root.panelForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
                     font.bold: true
@@ -1177,7 +1380,7 @@ Panel {
                     width: parent.width
                     text: channel
                     textFormat: Text.PlainText
-                    color: Qt.darker(root.barForeground, 1.4)
+                    color: Qt.darker(root.panelForeground, 1.4)
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.bodySmall
                     elide: Text.ElideRight
@@ -1192,7 +1395,7 @@ Panel {
                     iconText: (url === root.nowUrl && root.previewPlaying && !root.previewPaused) ? "" : ""
                     bordered: true
                     selected: url === root.nowUrl && root.previewPlaying
-                    foreground: root.barForeground
+                    foreground: root.panelForeground
                     accent: Color.accent
                     fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                     tooltipText: (url === root.nowUrl && root.previewPlaying && !root.previewPaused) ? "Pause this video" : "Watch inside the plugin"
@@ -1201,13 +1404,24 @@ Panel {
                   Button {
                     width: Style.space(104)
                     text: "Download"
-                    iconText: ""
+                    iconText: ""
                     bordered: true
-                    foreground: root.barForeground
+                    foreground: root.panelForeground
                     accent: Color.accent
                     fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                     tooltipText: "Queue for download"
                     onClicked: root.queueDownload(title, url)
+                  }
+                  Button {
+                    width: Style.space(104)
+                    text: "Subs"
+                    iconText: "󰈙"
+                    bordered: true
+                    foreground: root.panelForeground
+                    accent: Color.accent
+                    fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                    tooltipText: "Transcribe to .srt with local whisper"
+                    onClicked: root.transcribe(title, url)
                   }
                 }
               }
@@ -1234,7 +1448,7 @@ Panel {
               text: "Open folder"
               iconText: ""
               bordered: true
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               tooltipText: "Open download folder"
@@ -1244,7 +1458,7 @@ Panel {
               visible: root.downloading
               text: "Cancel all"
               iconText: ""
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onClicked: root.cancelDownload()
@@ -1252,7 +1466,7 @@ Panel {
             Text {
               visible: !root.downloading && dlQueueModel.count === 0 && historyModel.count === 0
               text: "Queue empty — add from Search or paste a URL."
-              color: Qt.darker(root.barForeground, 1.5)
+              color: Qt.darker(root.panelForeground, 1.5)
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
               font.italic: true
@@ -1262,7 +1476,7 @@ Panel {
           Text {
             visible: dlQueueModel.count > 0
             text: "UP NEXT (" + dlQueueModel.count + ")"
-            color: Qt.darker(root.barForeground, 1.4)
+            color: Qt.darker(root.panelForeground, 1.4)
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             font.bold: true
@@ -1281,7 +1495,7 @@ Panel {
               width: parent.width
               height: Style.space(40)
               radius: Style.cornerRadius
-              color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.06)
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.06)
               Row {
                 anchors.fill: parent
                 anchors.leftMargin: Style.space(10)
@@ -1291,7 +1505,7 @@ Panel {
                   width: parent.width - Style.space(52)
                   text: (index + 1) + ". " + title
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.panelForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.bodySmall
                   elide: Text.ElideRight
@@ -1301,7 +1515,7 @@ Panel {
                   width: Style.space(40)
                   text: ""
                   iconText: ""
-                  foreground: root.barForeground
+                  foreground: root.panelForeground
                   accent: Color.accent
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                   tooltipText: "Remove from queue"
@@ -1317,7 +1531,7 @@ Panel {
             Text {
               width: parent.width - Style.space(150)
               text: "COMPLETED"
-              color: Qt.darker(root.barForeground, 1.4)
+              color: Qt.darker(root.panelForeground, 1.4)
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -1327,7 +1541,7 @@ Panel {
               width: Style.space(142)
               text: "Clear all"
               iconText: ""
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               tooltipText: "Clear completed list"
@@ -1349,7 +1563,7 @@ Panel {
               width: parent.width
               height: Style.space(56)
               radius: Style.cornerRadius
-              color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.05)
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.05)
               Row {
                 anchors.fill: parent
                 anchors.margins: Style.space(6)
@@ -1362,7 +1576,7 @@ Panel {
                     width: parent.width
                     text: "✓ " + title
                     textFormat: Text.PlainText
-                    color: root.barForeground
+                    color: root.panelForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.bodySmall
                     elide: Text.ElideRight
@@ -1371,7 +1585,7 @@ Panel {
                     width: parent.width
                     text: detail
                     textFormat: Text.PlainText
-                    color: Qt.darker(root.barForeground, 1.5)
+                    color: Qt.darker(root.panelForeground, 1.5)
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
                   }
@@ -1381,7 +1595,7 @@ Panel {
                   text: "Delete"
                   iconText: ""
                   bordered: true
-                  foreground: root.barForeground
+                  foreground: root.panelForeground
                   accent: Color.accent
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                   tooltipText: "Delete entry + downloaded files"
@@ -1399,7 +1613,7 @@ Panel {
           spacing: Style.space(8)
           Text {
             text: "DOWNLOAD LOCATION"
-            color: Qt.darker(root.barForeground, 1.4)
+            color: Qt.darker(root.panelForeground, 1.4)
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             font.bold: true
@@ -1411,7 +1625,7 @@ Panel {
               id: dirField
               width: parent.width - Style.space(88)
               text: root.downloadDir
-              foreground: root.barForeground
+              foreground: root.panelForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               onEditingFinished: {
                 root.downloadDir = text;
@@ -1423,7 +1637,7 @@ Panel {
               text: "Save"
               iconText: ""
               bordered: true
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onClicked: {
@@ -1438,7 +1652,7 @@ Panel {
             label: "Video quality"
             value: root.quality
             options: Model.qualityOptions()
-            foreground: root.barForeground
+            foreground: root.panelForeground
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onChanged: function(v) {
               root.quality = v;
@@ -1453,7 +1667,7 @@ Panel {
               label: "Audio format"
               value: root.audioFormat
               options: Model.audioFormatOptions()
-              foreground: root.barForeground
+              foreground: root.panelForeground
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onChanged: function(v) {
                 root.audioFormat = v;
@@ -1465,7 +1679,7 @@ Panel {
               label: "Video container"
               value: root.videoFormat
               options: Model.videoContainerOptions()
-              foreground: root.barForeground
+              foreground: root.panelForeground
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onChanged: function(v) {
                 root.videoFormat = v;
@@ -1478,19 +1692,39 @@ Panel {
             label: "Results per search"
             value: root.maxResults
             options: Model.maxResultsOptions()
-            foreground: root.barForeground
+            foreground: root.panelForeground
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onChanged: function(v) {
               root.maxResults = v;
               root.persistSettings({ maxResults: v });
             }
           }
+          Dropdown {
+            width: parent.width
+            label: "Browser cookies"
+            value: root.cookiesBrowser
+            options: Model.cookiesBrowserOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.cookiesBrowser = v;
+              root.persistSettings({ cookiesBrowser: v });
+            }
+          }
+          Text {
+            width: parent.width
+            text: "Cookies das settings do navegador (yt-dlp --cookies-from-browser) para passar no check de bot do YouTube."
+            color: Qt.darker(root.panelForeground, 1.5)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
           Toggle {
             width: parent.width
             label: "Playlist mode"
             description: "ON downloads full playlists, OFF single videos only"
             checked: root.playlistMode === "playlist"
-            foreground: root.barForeground
+            foreground: root.panelForeground
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: {
               var next = root.playlistMode === "playlist" ? "single" : "playlist";
@@ -1503,11 +1737,164 @@ Panel {
             label: "Show video picture"
             description: "OFF keeps a tiny audio-style player"
             checked: root.showVideo
-            foreground: root.barForeground
+            foreground: root.panelForeground
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: {
               root.showVideo = !root.showVideo;
               root.persistSettings({ showVideo: root.showVideo });
+            }
+          }
+          Text {
+            text: "AUDIO TRACK & SUBTITLES"
+            color: Qt.darker(root.panelForeground, 1.4)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Dropdown {
+            width: parent.width
+            label: "Audio track (dub)"
+            value: root.audioLang
+            options: Model.audioLangOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.audioLang = v;
+              root.persistSettings({ audioLang: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Subtitles (native)"
+            value: root.subLangs
+            options: Model.subLangsOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.subLangs = v;
+              root.persistSettings({ subLangs: v });
+            }
+          }
+          Toggle {
+            width: parent.width
+            label: "Embed subtitles"
+            description: "ON embeds into the video (forces MKV); OFF saves a .srt beside it"
+            checked: root.embedSubs
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onClicked: {
+              root.embedSubs = !root.embedSubs;
+              root.persistSettings({ embedSubs: root.embedSubs });
+            }
+          }
+          Text {
+            text: "TRANSCRIPTION (WHISPER)"
+            color: Qt.darker(root.panelForeground, 1.4)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Dropdown {
+            width: parent.width
+            label: "Engine"
+            value: root.whisperEngine
+            options: Model.whisperEngineOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperEngine = v;
+              root.persistSettings({ whisperEngine: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Transcription language"
+            value: root.whisperLang
+            options: Model.transcribeLangOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperLang = v;
+              root.persistSettings({ whisperLang: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Local model"
+            value: root.whisperModel
+            options: Model.whisperModelOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperModel = v;
+              root.persistSettings({ whisperModel: v });
+            }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            TextField {
+              id: whisperCmdField
+              width: parent.width - Style.space(88)
+              text: root.whisperCmd
+              foreground: root.panelForeground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              placeholderText: "auto"
+              onEditingFinished: {
+                root.whisperCmd = text;
+                root.persistSettings({ whisperCmd: text });
+              }
+            }
+            Button {
+              width: Style.space(80)
+              text: "Save"
+              iconText: ""
+              bordered: true
+              foreground: root.panelForeground
+              accent: Color.accent
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onClicked: {
+                root.whisperCmd = whisperCmdField.text;
+                root.persistSettings({ whisperCmd: whisperCmdField.text });
+                root.statusLine = "Whisper command saved.";
+              }
+            }
+          }
+          Text {
+            width: parent.width
+            text: "'auto' runs whisper-cli with your voxtype GGML models. Custom template: {wav} {input} {dir} {lang}."
+            color: Qt.darker(root.panelForeground, 1.5)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+          Row {
+            visible: root.whisperEngine === "openai"
+            width: parent.width
+            spacing: Style.space(8)
+            Dropdown {
+              width: (parent.width - Style.space(8)) / 2
+              label: "API model"
+              value: root.whisperApiModel
+              options: Model.whisperApiModelOptions()
+              foreground: root.panelForeground
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onChanged: function(v) {
+                root.whisperApiModel = v;
+                root.persistSettings({ whisperApiModel: v });
+              }
+            }
+            TextField {
+              id: keyEnvField
+              width: (parent.width - Style.space(8)) / 2
+              text: root.whisperKeyEnv
+              foreground: root.panelForeground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              placeholderText: "OPENAI_API_KEY"
+              onEditingFinished: {
+                root.whisperKeyEnv = text;
+                root.persistSettings({ whisperKeyEnv: text });
+              }
             }
           }
           Row {
@@ -1517,7 +1904,7 @@ Panel {
               text: "Check dependencies"
               iconText: ""
               bordered: true
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onClicked: root.checkDeps()
@@ -1525,7 +1912,7 @@ Panel {
             Button {
               text: "Open folder"
               iconText: ""
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               onClicked: root.openDownloadFolder()
@@ -1533,7 +1920,7 @@ Panel {
             Button {
               text: "Clear cache"
               iconText: ""
-              foreground: root.barForeground
+              foreground: root.panelForeground
               accent: Color.accent
               fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
               tooltipText: "Delete cached preview videos"
@@ -1544,7 +1931,7 @@ Panel {
             id: depText
             width: parent.width
             text: "yt-dlp + mpv + ffmpeg required. Click check."
-            color: Qt.darker(root.barForeground, 1.4)
+            color: Qt.darker(root.panelForeground, 1.4)
             font.family: "monospace"
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
