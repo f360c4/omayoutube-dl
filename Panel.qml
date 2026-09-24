@@ -1616,11 +1616,21 @@ Panel {
           }
         }
 
-        // ---- SETTINGS TAB ----
-        Column {
+        // ---- SETTINGS TAB (scrollable) ----
+        Flickable {
+          id: settingsFlick
           visible: root.tab === "settings"
           width: parent.width
-          spacing: Style.space(8)
+          height: Math.min(settingsCol.implicitHeight, Style.space(520))
+          contentWidth: width
+          contentHeight: settingsCol.implicitHeight
+          clip: true
+          interactive: contentHeight > height
+          boundsBehavior: Flickable.StopAtBounds
+          Column {
+            id: settingsCol
+            width: settingsFlick.width
+            spacing: Style.space(8)
           Text {
             text: "DOWNLOAD LOCATION"
             color: Qt.darker(root.panelForeground, 1.4)
@@ -1945,6 +1955,7 @@ Panel {
             font.family: "monospace"
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
           }
         }
       }
