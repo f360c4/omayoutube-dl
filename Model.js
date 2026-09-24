@@ -103,6 +103,18 @@ function audioFormatFor(audioLang) {
   }
 }
 
+// ISO 639-2 code to tag the first audio track with, when we know the picked
+// language (yt-dlp otherwise leaves a misleading tag like "eng" on a dub).
+function audioLangTag(audioLang) {
+  switch (String(audioLang)) {
+  case "pt":
+  case "pt+en":
+    return "por";
+  default:
+    return "";
+  }
+}
+
 function audioLangOptions() {
   return [
     { value: "original", label: "Original / best" },
@@ -180,6 +192,11 @@ function buildDownloadCommand(opts) {
     // embedded subtitles; use it whenever we need either.
     if (multiAudio || embedSubs) container = "mkv";
     if (container !== "best") cmd.push("--remux-video", container);
+    var langTag = audioLangTag(audioLang);
+    if (langTag !== "") {
+      cmd.push("--postprocessor-args", "Merger+ffmpeg:-metadata:s:a:0 language=" + langTag);
+      cmd.push("--postprocessor-args", "VideoRemuxer+ffmpeg:-metadata:s:a:0 language=" + langTag);
+    }
   }
 
   if (wantSubs) {
