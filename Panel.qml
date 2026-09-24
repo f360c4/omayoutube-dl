@@ -522,14 +522,24 @@ Panel {
   function handleTrLine(line) {
     var s = String(line || "");
     if (s.trim() === "") return;
+    // yt-dlp download progress (0-100).
     var r = Model.parseProgressLine(s);
     if (r) {
       root.transcribePct = r.pct;
-      root.transcribeDetail = s.trim().slice(0, 110);
+      root.transcribeDetail = "Downloading audio… " + Math.round(r.pct) + "%";
+      return;
+    }
+    // whisper.cpp progress (-pp), e.g. "whisper_print_progress_callback: progress =  42%".
+    var wp = /progress\s*=\s*(\d+)\s*%/.exec(s);
+    if (wp) {
+      var v = parseInt(wp[1], 10);
+      if (isFinite(v)) root.transcribePct = Math.max(0, Math.min(100, v));
+      root.transcribeDetail = "Transcribing… " + Math.round(root.transcribePct) + "%";
       return;
     }
     var t = s.trim();
     if (t.indexOf("DONE:") === 0) {
+      root.transcribePct = 100;
       root.transcribeDetail = "saved " + t.slice(5);
       return;
     }

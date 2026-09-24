@@ -294,7 +294,7 @@ function buildTranscribeScript(opts) {
     L.push("  echo 'whisper.cpp model: '$(basename \"$model\")");
     // Physical cores, not logical: hyperthreads make whisper.cpp slower here.
     L.push("  t=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l); [ \"${t:-0}\" -gt 0 ] 2>/dev/null || t=$(nproc)");
-    L.push("  whisper-cli -m \"$model\" -f \"$wav\" -l " + lang + " -t \"$t\" -osrt -of " + shellQuote(base));
+    L.push("  whisper-cli -m \"$model\" -f \"$wav\" -l " + lang + " -t \"$t\" -pp -osrt -of " + shellQuote(base));
     L.push("elif command -v whisper >/dev/null 2>&1; then");
     L.push("  whisper \"$wav\" --model small --language " + lang + " --output_format srt --output_dir " + shellQuote(cache));
     L.push("elif command -v whisper-ctranslate2 >/dev/null 2>&1; then");
