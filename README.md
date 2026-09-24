@@ -21,6 +21,18 @@ Requires system tools (already on most Omarchy installs):
 command -v yt-dlp mpv ffmpeg socat
 ```
 
+### Fresh machine (format) quickstart
+
+```sh
+# 1. plugin
+omarchy plugin add https://github.com/f360c4/omayoutube-dl.git --enable
+
+# 2. GPU Whisper build (recommended; reuses voxtype's GGML models)
+~/.config/omarchy/plugins/io.github.aznit11.omayoutube-dl/scripts/setup-whisper-vulkan.sh
+```
+
+That's it — set the bar widget and the plugin's `auto` mode will use the GPU build.
+
 ## Usage
 
 - Click the `YT` bar button to open the panel.
@@ -67,8 +79,8 @@ fork ships a script that builds a **static Vulkan** `whisper-cli` into
 `~/.local/bin`, which the plugin's `auto` mode then uses automatically:
 
 ```sh
-git clone https://github.com/f360c4/omayoutube-dl.git
-./omayoutube-dl/scripts/setup-whisper-vulkan.sh
+# from the installed plugin directory (see Install)
+~/.config/omarchy/plugins/io.github.aznit11.omayoutube-dl/scripts/setup-whisper-vulkan.sh
 ```
 
 No root needed. It installs `cmake`/`ninja` via `mise` if missing, clones
