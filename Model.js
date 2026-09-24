@@ -271,6 +271,7 @@ function buildTranscribeScript(opts) {
          + (fmt === "srt" ? " -F temperature=0" : "")
          + " -o " + shellQuote(srtOut));
     L.push("if [ ! -s " + shellQuote(srtOut) + " ]; then echo 'ERROR: transcription request failed'; exit 5; fi");
+    L.push("rm -f " + shellQuote(base) + ".*");
     L.push("echo " + shellQuote("DONE:" + srtOut));
     return L.join("\n");
   }
@@ -314,6 +315,7 @@ function buildTranscribeScript(opts) {
   L.push("srt=$(ls " + shellQuote(base) + "*.srt " + shellQuote(base) + "*.vtt 2>/dev/null | head -n1)");
   L.push("if [ -z \"$srt\" ]; then echo 'ERROR: no .srt/.vtt produced (check the command in Settings)'; exit 7; fi");
   L.push("cp -f \"$srt\" " + shellQuote(srtOutLocal));
+  L.push("rm -f " + shellQuote(base) + ".*");
   L.push("echo " + shellQuote("DONE:" + srtOutLocal));
   return L.join("\n");
 }
